@@ -1,6 +1,6 @@
 # rp_agent: Specification
 
-**Status:** Draft v0.2. Review decisions are recorded in §14. Nothing is implemented yet.
+**Status:** v0.3, ready for implementation. Review decisions are recorded in §14. Nothing is implemented yet.
 **Purpose:** A LangGraph agent that handles **one specific data request**. It turns the user's plain-language request into **one** correct, economical `rpdata.get_data` call on **one** view. It keeps the resulting DataFrame in a per-user store and hands back an ID. It learns from each call and each human review, so over time it needs fewer human checks and makes fewer bad calls.
 
 ---
@@ -9,7 +9,7 @@
 
 ### Goals
 - **Retrieve data** from `rpdata` for a single request such as *"Tier1 breaches on the equity desks on 28 Aug"*.
-- **One request, one view, one call.** Each request resolves to exactly one view and at most one automatic `get_data` call.
+- **One request, one view, one call.** Each request resolves to exactly one view and at most one automatic `get_data` call. The only exception is one human-approved retry after a failed call, so no request makes more than 2 calls.
 - **Pick a view.** The view must be one of `rpdata.list_views()`. If the agent is unsure, a human reviews the choice.
 - **Pick parameters.** Every mandatory parameter must be filled. Values are validated before the call with `rpdata`'s own parameter validators. If the agent is unsure, a human reviews the parameters.
 - **Treat `get_data` as expensive.** Call it only when the view and parameters are settled. Never call it to explore, and never call it for data the same user retrieved in the last 30 minutes.
@@ -532,6 +532,4 @@ These would make the agent more efficient. The agent is designed to work without
 4. **No subset reuse or post-extraction filtering:** a separate agent handles filtering. This agent focuses on efficient extraction and reuses only exact matches (§7.3).
 5. **Learned notes:** created by the agent while it runs, in a git-ignored directory. Not committed, and no seed notes (§8.2).
 6. **Human in the loop:** a human reviews the proposed call only when something is uncertain. When the agent is sure, it calls `get_data` with no confirmation (§5.6).
-
-### Open question
-- **Retry after a failed call.** Decision 3 limits each request to one call. This draft lets the agent make **one** extra call only after a failed call **and** a human approving a corrected proposal (§6.2). Should that stay, or should a failed call always end the request (setting `max_calls_per_request` to 1), so the orchestrator or user sends a new request?
+7. **Retry after a failed call:** the agent never retries on its own. After a failed call it may make **one** more call, and only once a human approves a corrected proposal. No request makes more than 2 `get_data` calls (§6.2, §6.3).
