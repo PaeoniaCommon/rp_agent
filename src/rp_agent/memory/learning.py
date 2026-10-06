@@ -22,7 +22,6 @@ from types import MappingProxyType
 from typing import Any
 
 from ..llm import prompts
-from ..llm.client import structured
 from ..llm.schemas import NoteDraft, PhraseDraft
 from .knowledge import KnowledgeBase
 from .values import CLOSED_UNPUBLISHED, ValueDomains, squash
@@ -156,7 +155,7 @@ class LearningWorker:
         if self.llm is None:
             return fallback
         try:
-            draft = structured(self.llm, NoteDraft, prompts.NOTE_SYSTEM, facts)
+            draft = self.llm.structured(NoteDraft, prompts.NOTE_SYSTEM, facts)
             text = " ".join(draft.text.split())
         except Exception as exc:  # noqa: BLE001 - phrasing is optional; use the fallback
             log.warning("Note phrasing failed (%s); using fallback text", exc)
@@ -170,7 +169,7 @@ class LearningWorker:
         if self.llm is None or not request:
             return None
         try:
-            draft = structured(self.llm, PhraseDraft, prompts.PHRASE_SYSTEM,
+            draft = self.llm.structured(PhraseDraft, prompts.PHRASE_SYSTEM,
                                prompts.phrase_user(request, target))
         except Exception as exc:  # noqa: BLE001 - no phrase means no alias
             log.warning("Phrase extraction failed (%s)", exc)

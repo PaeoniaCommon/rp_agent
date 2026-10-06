@@ -12,7 +12,6 @@ from typing import Any
 from langgraph.types import interrupt
 
 from ...llm import prompts
-from ...llm.client import structured
 from ...llm.schemas import ReviewDecision
 from ...memory.learning import REVIEW, LearningEvent
 
@@ -146,7 +145,7 @@ def parse_reply(ctx, state, payload, reply: Any) -> dict[str, Any]:
     if edits:
         return {"action": "edit", "edits": edits}
 
-    decision = structured(ctx.llm, ReviewDecision, prompts.REVIEW_SYSTEM,
+    decision = ctx.llm.structured(ReviewDecision, prompts.REVIEW_SYSTEM,
                           prompts.review_user(payload["text"], text))
     return {"action": decision.action,
             "edits": {e.name: _coerce(ctx, e.name, e.value) for e in decision.edits}}

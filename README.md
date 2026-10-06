@@ -12,7 +12,17 @@ See [`SPEC.md`](SPEC.md) for the full specification.
 
 ```bash
 pip install -e ".[dev]"
-export ANTHROPIC_API_KEY=...        # the default model is claude-opus-5-5
+export RP_AGENT_MODEL=...           # model name on your endpoint
+export RP_AGENT_API_KEY=...
+export RP_AGENT_BASE_URL=...        # any OpenAI-compatible endpoint, e.g. https://api.openai.com/v1
+```
+
+The model is a `langchain_openai.ChatOpenAI`. You can also pass the settings in code:
+
+```python
+from rp_agent import RPAgent, Settings
+
+agent = RPAgent(Settings(model="my-model", api_key="...", base_url="https://llm.example.com/v1"))
 ```
 
 `rpdata` is installed from `git+https://github.com/PaeoniaCommon/rpdata.git`.
@@ -75,9 +85,16 @@ src/rp_agent/
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `RP_AGENT_MODEL` | `claude-opus-5-5` | Main model |
-| `RP_AGENT_EFFORT` | `medium` | Effort for the main model |
+| `RP_AGENT_MODEL` | *(required)* | Model name on the endpoint |
+| `RP_AGENT_API_KEY` | `OPENAI_API_KEY` | API key |
+| `RP_AGENT_BASE_URL` | `OPENAI_BASE_URL`, else the OpenAI API | Base URL of an OpenAI-compatible endpoint |
+| `RP_AGENT_STRUCTURED_OUTPUT` | `json_schema` | How structured output is requested: `json_schema`, or `function_calling` / `json_mode` for endpoints without JSON-schema support |
+| `RP_AGENT_TEMPERATURE` | not sent | Sampling temperature |
+| `RP_AGENT_MAX_TOKENS` | not sent | Max output tokens |
+| `RP_AGENT_TIMEOUT` | client default | Request timeout in seconds |
 | `RP_AGENT_LEARN_MODEL` | same as `RP_AGENT_MODEL` | Model for phrasing notes in the background |
+| `RP_AGENT_LEARN_API_KEY` | same as `RP_AGENT_API_KEY` | API key for the learning model |
+| `RP_AGENT_LEARN_BASE_URL` | same as `RP_AGENT_BASE_URL` | Base URL for the learning model |
 | `RP_AGENT_KNOWLEDGE_DIR` | `./knowledge` | Learned notes and value indexes |
 | `RP_AGENT_LOG_DIR` | `./logs` | `get_data_calls.jsonl` |
 | `RP_AGENT_PARAM_DOMAINS` | | Override value domains, e.g. `node=closed_unpublished` |

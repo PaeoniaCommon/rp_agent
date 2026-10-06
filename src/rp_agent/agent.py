@@ -19,7 +19,7 @@ from .data.validation import ParamValidator
 from .graph import build_graph
 from .graph.context import AgentContext
 from .graph.state import initial_state
-from .llm import make_chat_model
+from .llm import LLMClient, make_chat_model
 from .memory.knowledge import KnowledgeBase
 from .memory.learning import Learning, LearningWorker
 from .memory.values import ValueDomains
@@ -55,17 +55,19 @@ class RPAgent:
         self.settings = settings or Settings.from_env()
         s = self.settings
         if llm is None:
-            llm = make_chat_model(s.model, s.effort, s.max_tokens)
+            llm = make_chat_model(s.model, s.api_key, s.base_url, s.temperature,
+                                  s.max_tokens, s.timeout)
         if learn_llm is None:
-            learn_llm = (llm if s.resolved_learn_model == s.model and s.learn_effort == s.effort
-                         else make_chat_model(s.resolved_learn_model, s.learn_effort,
-                                              s.max_tokens))
+            learn_llm = llm if s.learn_uses_main_model else make_chat_model(
+                s.learn_model or s.model, s.learn_api_key or s.api_key,
+                s.learn_base_url or s.base_url, s.temperature, s.max_tokens, s.timeout)
+        method = s.structured_output_method
         catalogue = Catalogue()
         knowledge = KnowledgeBase(s.knowledge_dir, clock, s.max_rules_per_file,
                                   s.max_examples_per_view, s.max_aliases)
         domains = ValueDomains(catalogue, knowledge, s, clock)
         self.learning = Learning(
-            LearningWorker(knowledge, domains, catalogue, learn_llm),
+            LearningWorker(knowledge, domains, catalogue, LLMClient(learn_llm, method)),
             queue_size=s.learning_queue_size,
             shutdown_timeout=s.learning_shutdown_timeout,
         )
@@ -74,7 +76,7 @@ class RPAgent:
         self.ctx = AgentContext(
             settings=s, catalogue=catalogue, knowledge=knowledge, domains=domains,
             validator=ParamValidator(catalogue, knowledge, domains, s),
-            store=self.store, gateway=self.gateway, learning=self.learning, llm=llm,
+            store=self.store, gateway=self.gateway, learning=self.learning, llm=LLMClient(llm, method),
             clock=clock,
         )
         self.graph = build_graph(self.ctx)

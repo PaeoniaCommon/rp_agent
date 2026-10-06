@@ -1,4 +1,6 @@
-"""Learning-curve evaluation (SPEC.md §11). Needs a real LLM (ANTHROPIC_API_KEY); run by hand.
+"""Learning-curve evaluation (SPEC.md §11). Needs a real LLM; run by hand.
+
+Configure the model with RP_AGENT_MODEL, RP_AGENT_API_KEY and RP_AGENT_BASE_URL.
 
 Runs a fixed set of single data requests twice: first with an empty knowledge
 directory, then again with the notes the first run produced. For each run it

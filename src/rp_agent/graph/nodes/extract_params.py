@@ -7,7 +7,6 @@ parameter's values sized by its value domain (SPEC.md §8.4).
 from __future__ import annotations
 
 from ...llm import prompts
-from ...llm.client import structured
 from ...llm.schemas import param_extraction_model
 from ...memory.values import CLOSED_UNPUBLISHED, LARGE_CLOSED, SMALL_CLOSED
 
@@ -37,7 +36,7 @@ def run(ctx, state, config) -> dict:
     user = prompts.params_user(request, view, blocks, kb.rules("general", "general"),
                                kb.rules("view", view.name), kb.examples(view.name), ctx.today())
     schema = param_extraction_model(tuple(view.all_params))
-    extraction = structured(ctx.llm, schema, prompts.PARAMS_SYSTEM, user)
+    extraction = ctx.llm.structured(schema, prompts.PARAMS_SYSTEM, user)
 
     proposal: dict[str, dict] = {}
     for p in extraction.params:

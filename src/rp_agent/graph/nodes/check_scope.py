@@ -7,7 +7,6 @@ Scope and view choice share one structured call to keep latency down;
 from __future__ import annotations
 
 from ...llm import prompts
-from ...llm.client import structured
 from ...llm.schemas import view_choice_model
 
 
@@ -19,7 +18,7 @@ def run(ctx, state, config) -> dict:
     examples = {v: kb.examples(v) for v in names}
     user = prompts.view_user(state["request"], ctx.catalogue.describe_views(), general,
                              view_rules, examples, ctx.today())
-    choice = structured(ctx.llm, view_choice_model(names), prompts.VIEW_SYSTEM, user)
+    choice = ctx.llm.structured(view_choice_model(names), prompts.VIEW_SYSTEM, user)
     update = {} if choice.single_request else {"outcome": "out_of_scope"}
     return {
         **update,

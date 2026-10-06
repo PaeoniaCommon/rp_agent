@@ -62,9 +62,10 @@ class FakeLLM:
     def __init__(self, **handlers: Any) -> None:
         self.handlers: dict[str, Any] = handlers
         self.calls: list[tuple[str, str]] = []
+        self.methods: list[str] = []
 
     def with_structured_output(self, schema, method: str = "json_schema"):
-        assert method == "json_schema"
+        self.methods.append(method)
         return _Bound(self, schema)
 
     def count(self, name: str) -> int:

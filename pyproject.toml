@@ -12,7 +12,7 @@ dependencies = [
     "rpdata @ git+https://github.com/PaeoniaCommon/rpdata.git",
     "langgraph>=1.0",
     "langchain-core>=1.0",
-    "langchain-anthropic>=1.7",
+    "langchain-openai>=1.0",
     "pandas>=2.0",
     "pydantic>=2.0",
     "pyyaml>=6.0",

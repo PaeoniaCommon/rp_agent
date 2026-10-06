@@ -33,7 +33,7 @@
 | Language | Python ≥ 3.10 (matches `rpdata`) |
 | Agent framework | `langgraph` (state graph, checkpointer, `interrupt` for human review) |
 | LLM interface | `langchain-core` chat models with structured output (Pydantic schemas) |
-| Default LLM | An Anthropic Claude model via `langchain-anthropic`, chosen by config / env var (`RP_AGENT_MODEL`). Any LangChain chat model that supports structured output can be used |
+| LLM | `langchain_openai.ChatOpenAI`, configured with a model name, API key and base URL (`RP_AGENT_MODEL`, `RP_AGENT_API_KEY`, `RP_AGENT_BASE_URL`), so any OpenAI-compatible endpoint can be used. Structured output uses `json_schema` by default; `function_calling` or `json_mode` can be set for endpoints without JSON-schema support (`RP_AGENT_STRUCTURED_OUTPUT`) |
 | Data dependency | `rpdata` as a package dependency, e.g. `rpdata @ git+https://github.com/PaeoniaCommon/rpdata.git@<tag>` |
 | Other runtime deps | `pandas`, `pydantic` |
 | Dev deps | `pytest`, `ruff` |
@@ -446,7 +446,7 @@ Learning must add **no latency** to the user's reply.
 **Processing events (off the request path).**
 - One `LearningWorker` runs on a background daemon thread for each agent instance, started with the agent. It takes events from the queue in order and does all the learning work in §8.3: LLM phrasing, dedup, merging, size limits, promoting and demoting notes, value-domain changes and value-index updates (§8.4).
 - A thread is used, rather than an asyncio task, so the worker behaves the same whether the agent is called from sync or async code.
-- The worker can use a different, cheaper model from the main agent (`RP_AGENT_LEARN_MODEL`, which defaults to `RP_AGENT_MODEL`).
+- The worker can use a different, cheaper model from the main agent (`RP_AGENT_LEARN_MODEL`, `RP_AGENT_LEARN_API_KEY` and `RP_AGENT_LEARN_BASE_URL`, which default to the main model's settings).
 
 **Isolation.**
 - An exception in the worker is logged and the event is dropped. It never reaches the user and never stops the worker.
@@ -559,7 +559,7 @@ rp_agent/
 │   │   └── canonical.py          # CanonicalRequest and cache keys (§7.3)
 │   │
 │   └── llm/                      # the language model
-│       ├── client.py             # ChatAnthropic construction, structured-output calls
+│       ├── client.py             # ChatOpenAI construction (model, API key, base URL); LLMClient
 │       ├── prompts.py            # system prompts and prompt context blocks
 │       └── schemas.py            # Pydantic schemas for structured output
 └── tests/
