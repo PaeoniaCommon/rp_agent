@@ -1,6 +1,6 @@
 # rp_agent: Specification
 
-**Status:** v0.5, ready for implementation. Review decisions are recorded in §14. Nothing is implemented yet.
+**Status:** v0.6, implemented in this repository (`src/rp_agent/`, `tests/`, `scripts/eval_learning.py`). Review decisions are recorded in §14.
 **Purpose:** A LangGraph agent that handles **one specific data request**. It turns the user's plain-language request into **one** correct, economical `rpdata.get_data` call on **one** view. It keeps the resulting DataFrame in a per-user store and hands back an ID. It learns from each call and each human review, so over time it needs fewer human checks and makes fewer bad calls.
 
 ---
@@ -121,15 +121,15 @@ Solid arrows are the request path. Dotted arrows are learning, which runs **in p
 | Node | Kind | Responsibility |
 |---|---|---|
 | `load_context` | Deterministic | Load the catalogue, the general notes and the view-selection notes |
-| `check_scope` | LLM + check | Confirm that the request can be met by one call on one view. If not, reply that this agent handles one data request at a time and name the parts, without calling `get_data`. (Splitting is the orchestrator's job) |
-| `select_view` | LLM + check | Propose a view with a certainty flag (§5.3). The output must be in `list_views()`, which is enforced by an enum in the schema and checked again in code |
+| `check_scope` | LLM + check | Confirm that the request can be met by one call on one view. If not, reply that this agent handles one data request at a time and name the parts, without calling `get_data`. (Splitting is the orchestrator's job.) To keep latency down, this single structured LLM call also proposes the view (§5.3) |
+| `select_view` | Deterministic | Apply the checks in §5.3 to the view proposed by `check_scope`. The view must be in `list_views()`, which is enforced by an enum in the schema and checked again in code |
 | `extract_params` | LLM + check | Propose the chosen view's parameters with a certainty flag on each (§5.4). Loads the notes for that view and its parameters only |
 | `validate_params` | Deterministic | Pre-flight checks (§5.5). No `get_data` call |
 | `human_review` | `interrupt` | Show the proposed call with its uncertain items marked; take approve / edit / reject (§5.6) |
 | `check_cache` | Deterministic | Look up the user's recent datasets by canonical request (§7.3) |
 | `check_budget` | Deterministic | Enforce the call limit (§6.2) |
 | `fetch` | Deterministic | Call `DataGateway.fetch` (the only `get_data` path) |
-| `store_result` | Deterministic | Save the DataFrame and metadata under the user, and get a dataset ID |
+| `store_result` | Deterministic | Save the DataFrame and metadata under the user, and get a dataset ID. Runs in the same step as `fetch`, so the DataFrame never enters the checkpointed graph state |
 | `diagnose` | Deterministic + LLM | Classify the `RPDataError`, emit a learning event, and build a corrected proposal for human review (§6.3) |
 | `respond` | Template | Reply with the dataset ID, view, params, retrieval time, whether it was reused, and the shape (§9) |
 | *(background)* `LearningWorker` | LLM + check | Not a graph node. Consumes learning events and writes, merges, confirms or demotes notes and value indexes (§8, §8.6) |
@@ -187,7 +187,7 @@ Optional parameters are set only when the request implies them. The agent does n
 | 5 | Rules across parameters: `previous_date ≤ current_date`, `min_utilisation ≤ max_utilisation`, the MASTER timeout rule, and any other rules learned from notes | Knowledge notes (§8), replaced by `rpdata.validate_params` when it exists (R1) | Mark uncertain, with a proposed fix |
 
 **When `Parameter.validate` rejects a value**, the agent tries a normalisation:
-- It is **certain** if there is exactly one candidate that differs only by case or whitespace and is in the parameter's known values: the full `allowed_values` list, or the learned value index for parameters with long lists (§8.4) (for example `tier1` → `Tier1`, `equities` → `EQUITIES`), or if a `certain` note gives the rule (for example, reformatting an ISO date string). The candidate must then pass `Parameter.validate`. The change is applied, and reported in the reply.
+- It is **certain** if there is exactly one candidate that differs only by case or whitespace and is in the parameter's known values: the full `allowed_values` list, or the learned value index for parameters with long lists (§8.4) (for example `tier1` → `Tier1`, `equities` → `EQUITIES`); or if exactly one simple case or whitespace variant of the value (upper, lower, title case, spaces removed) passes `Parameter.validate`, which lets the very first `node="equities"` be fixed before any value is learned; or if the fix is an unambiguous date reformat (`2026/07/01` → `2026-07-01`, since rpdata's format is `yyyy-mm-dd`), or a `certain` note gives the rule (for example, the users' day/month order). The candidate must then pass `Parameter.validate`. The change is applied, and reported in the reply.
 - Otherwise it is **uncertain** (for example, `EQUITY` could be `EQUITIES` or an `EQ_*` node; `01/07/2026` could be 1 July or 7 January). The failed value, the validator's error message and the candidate values go to human review.
 
 A normalisation that passes validation is recorded as a note (§8.3), so next time the LLM proposes the right value first.
@@ -217,7 +217,7 @@ Reply "ok" to approve, give corrections (e.g. "node EQUITIES"), or "cancel".
 Options shown in a review depend on the parameter's value domain (§8.4). A short closed list (such as `limit_level`) is shown in full. A long list (such as `node`) is shown as a shortlist of at most 10 closest matches, plus free text. Whatever the reviewer types is still checked with `Parameter.validate`.
 
 - **Approve:** the proposal goes back through `validate_params`. Items the reviewer approved become certain for this request.
-- **Edit:** the reviewer's values replace the proposal's, and are validated again. What the human says always beats notes and the LLM's proposal.
+- **Edit:** the reviewer's values replace the proposal's, and are validated again. Items the reviewer did not change are treated as approved, as with "ok". What the human says always beats notes and the LLM's proposal. A reply that is not "ok", "cancel", a view name, an option or `name value` pairs is interpreted by the LLM into the same approve / edit / cancel form.
 - **Reject / cancel:** no call is made, and the request ends.
 - If validation still finds an uncertain item after an edit, the agent asks again. It never calls `get_data` with an uncertain item.
 
@@ -265,10 +265,11 @@ If the human approves the corrected proposal, it goes back through `validate_par
 ```python
 class DataStore(Protocol):
     def put(self, user_id: str, df: pd.DataFrame, request: CanonicalRequest,
-            retrieved_at: datetime, original_request: str) -> DatasetRecord: ...
+            retrieved_at: datetime, original_request: str,
+            thread_id: str = "", cache_key: str = "") -> DatasetRecord: ...
     def get(self, user_id: str, dataset_id: str) -> DatasetRecord: ...     # KeyError if unknown to this user
     def get_df(self, user_id: str, dataset_id: str) -> pd.DataFrame: ...
-    def find_recent(self, user_id: str, request: CanonicalRequest,
+    def find_recent(self, user_id: str, cache_key: str,
                     within: timedelta, now: datetime) -> DatasetRecord | None: ...
     def list(self, user_id: str) -> list[DatasetRecord]: ...
 ```
@@ -293,7 +294,7 @@ v1 ships `InMemoryDataStore`: a dict keyed by `user_id`, held by the agent insta
 ### 7.3 Canonical request and the 30-minute reuse rule
 
 - `CanonicalRequest` = `(view, params)`. `params` drops `None` values, sorts keys, and normalises types (for example, `85` and `85.0` for utilisation become the same value). The cache key is a stable JSON serialisation of it.
-- **Reuse rule:** before any `get_data` call, `check_cache` calls `find_recent(user_id, request, within=30 min, now)`. If the **same user** has a record, from **any** of their conversations, whose `retrieved_at` is within the last 30 minutes, the agent returns that record's ID, view, params and retrieval time, says it was reused, and **does not** call `get_data`.
+- **Reuse rule:** before any `get_data` call, `check_cache` calls `find_recent(user_id, request.key(defaults), within=30 min, now)`. If the **same user** has a record, from **any** of their conversations, whose `retrieved_at` is within the last 30 minutes, the agent returns that record's ID, view, params and retrieval time, says it was reused, and **does not** call `get_data`.
 - The window is measured from the original `retrieved_at`. Reusing a record does not refresh it.
 - The 30-minute window only controls reuse. Older records stay retrievable by ID until the process ends.
 - If the user explicitly asks for fresh data ("refresh", "re-pull"), the cache is skipped and a new record is created. The old one is kept.

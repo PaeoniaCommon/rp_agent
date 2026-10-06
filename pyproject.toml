@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rp_agent"
+version = "0.1.0"
+description = "LangGraph agent that retrieves data from rpdata with one economical get_data call per request"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "rpdata @ git+https://github.com/PaeoniaCommon/rpdata.git",
+    "langgraph>=1.0",
+    "langchain-core>=1.0",
+    "langchain-anthropic>=1.7",
+    "pandas>=2.0",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "ruff>=0.4"]
+
+[project.scripts]
+rp-agent = "rp_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
