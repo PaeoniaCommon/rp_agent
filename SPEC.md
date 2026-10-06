@@ -1,6 +1,6 @@
 # rp_agent: Specification
 
-**Status:** v0.4, ready for implementation. Review decisions are recorded in §14. Nothing is implemented yet.
+**Status:** v0.5, ready for implementation. Review decisions are recorded in §14. Nothing is implemented yet.
 **Purpose:** A LangGraph agent that handles **one specific data request**. It turns the user's plain-language request into **one** correct, economical `rpdata.get_data` call on **one** view. It keeps the resulting DataFrame in a per-user store and hands back an ID. It learns from each call and each human review, so over time it needs fewer human checks and makes fewer bad calls.
 
 ---
@@ -50,6 +50,7 @@
 5. **DataFrames never enter the LLM context.** The LLM sees dataset metadata (ID, view, params, shape, columns), never the rows. This keeps prompts small and data out of the model.
 6. **The store is per user.** `user_id` comes from the chat config. The 30-minute reuse applies across all of that user's conversations, and never across users.
 7. **Learning happens at runtime.** Notes are plain Markdown files that the running agent creates and updates (§8). They are not committed to the repo.
+8. **Learning never delays the user.** Graph nodes only *emit* learning events onto an in-process queue, which takes microseconds and never blocks. A background worker does all learning work (LLM phrasing, merging, file writes, value-index updates) in parallel. The reply goes to the user without waiting for any of it (§8.6).
 
 ---
 
@@ -99,15 +100,21 @@ flowchart TD
     budget -->|no calls left| respond
     budget -->|ok| fetch[fetch]
 
-    fetch -->|success or empty| store[store_result] --> learn
-    fetch -->|RPDataError| diagnose --> learn
+    fetch -->|success or empty| store[store_result] --> respond
+    fetch -->|RPDataError| diagnose
     diagnose -->|corrected proposal| review
 
-    learn --> respond[respond]
-    respond --> END([reply to user])
+    respond[respond] --> END([reply to user])
+
+    store -. emit .-> q[(learning queue)]
+    diagnose -. emit .-> q
+    review -. emit .-> q
+    val -. emit .-> q
+    q -.-> worker[[learning worker - background, off the request path]]
+    worker -.-> kb[(knowledge/)]
 ```
 
-`learn` also runs after every `human_review` in which the human edited the proposal (§8.3). For readability that edge is not drawn.
+Solid arrows are the request path. Dotted arrows are learning, which runs **in parallel** and is not on the request path: nodes emit learning events onto a queue without waiting, and a background worker processes them (§8.6). No node on the request path waits for learning. For readability, not every emitting node is drawn.
 
 ### 5.2 Nodes
 
@@ -123,9 +130,9 @@ flowchart TD
 | `check_budget` | Deterministic | Enforce the call limit (§6.2) |
 | `fetch` | Deterministic | Call `DataGateway.fetch` (the only `get_data` path) |
 | `store_result` | Deterministic | Save the DataFrame and metadata under the user, and get a dataset ID |
-| `diagnose` | Deterministic + LLM | Classify the `RPDataError`, draft a learning note, and build a corrected proposal for human review (§6.3) |
-| `learn` | LLM + check | Write, merge, confirm or demote notes (§8) |
+| `diagnose` | Deterministic + LLM | Classify the `RPDataError`, emit a learning event, and build a corrected proposal for human review (§6.3) |
 | `respond` | Template | Reply with the dataset ID, view, params, retrieval time, whether it was reused, and the shape (§9) |
+| *(background)* `LearningWorker` | LLM + check | Not a graph node. Consumes learning events and writes, merges, confirms or demotes notes and value indexes (§8, §8.6) |
 
 ### 5.3 View selection
 
@@ -143,7 +150,7 @@ class ViewChoice(BaseModel):
 
 ### 5.4 Parameter extraction
 
-The LLM gets the request, the view's parameter metadata (dtype, description, format), the acceptable values for each parameter in a form that depends on how many there are (§8.5: the full list for short lists, a shortlist of likely candidates for long ones), the notes for the view and each of its parameters, and the current date. It returns one entry per parameter it wants to set:
+The LLM gets the request, the view's parameter metadata (dtype, description, format), the acceptable values for each parameter in a form that depends on how many there are (§8.4: the full list for short lists, a shortlist of likely candidates for long ones), the notes for the view and each of its parameters, and the current date. It returns one entry per parameter it wants to set:
 
 ```python
 class ParamValue(BaseModel):
@@ -180,7 +187,7 @@ Optional parameters are set only when the request implies them. The agent does n
 | 5 | Rules across parameters: `previous_date ≤ current_date`, `min_utilisation ≤ max_utilisation`, the MASTER timeout rule, and any other rules learned from notes | Knowledge notes (§8), replaced by `rpdata.validate_params` when it exists (R1) | Mark uncertain, with a proposed fix |
 
 **When `Parameter.validate` rejects a value**, the agent tries a normalisation:
-- It is **certain** if there is exactly one candidate that differs only by case or whitespace and is in the parameter's known values: the full `allowed_values` list, or the learned value index for parameters with long lists (§8.5) (for example `tier1` → `Tier1`, `equities` → `EQUITIES`), or if a `certain` note gives the rule (for example, reformatting an ISO date string). The candidate must then pass `Parameter.validate`. The change is applied, and reported in the reply.
+- It is **certain** if there is exactly one candidate that differs only by case or whitespace and is in the parameter's known values: the full `allowed_values` list, or the learned value index for parameters with long lists (§8.4) (for example `tier1` → `Tier1`, `equities` → `EQUITIES`), or if a `certain` note gives the rule (for example, reformatting an ISO date string). The candidate must then pass `Parameter.validate`. The change is applied, and reported in the reply.
 - Otherwise it is **uncertain** (for example, `EQUITY` could be `EQUITIES` or an `EQ_*` node; `01/07/2026` could be 1 July or 7 January). The failed value, the validator's error message and the candidate values go to human review.
 
 A normalisation that passes validation is recorded as a note (§8.3), so next time the LLM proposes the right value first.
@@ -207,7 +214,7 @@ I need you to check this before I query.
 Reply "ok" to approve, give corrections (e.g. "node EQUITIES"), or "cancel".
 ```
 
-Options shown in a review depend on the parameter's value domain (§8.5). A short closed list (such as `limit_level`) is shown in full. A long list (such as `node`) is shown as a shortlist of at most 10 closest matches, plus free text. Whatever the reviewer types is still checked with `Parameter.validate`.
+Options shown in a review depend on the parameter's value domain (§8.4). A short closed list (such as `limit_level`) is shown in full. A long list (such as `node`) is shown as a shortlist of at most 10 closest matches, plus free text. Whatever the reviewer types is still checked with `Parameter.validate`.
 
 - **Approve:** the proposal goes back through `validate_params`. Items the reviewer approved become certain for this request.
 - **Edit:** the reviewer's values replace the proposal's, and are validated again. What the human says always beats notes and the LLM's proposal.
@@ -302,8 +309,8 @@ v1 ships `InMemoryDataStore`: a dict keyed by `user_id`, held by the agent insta
 |---|---|---|
 | Format rule | "`current_date` must be a `yyyy-mm-dd` string; `2026/07/01` is rejected" | `extract_params`, `validate_params` |
 | Normalisation | "Node names are upper case; `equities` → `EQUITIES` is safe" | `extract_params`, `validate_params` |
-| Value domain | "`node` is a closed list that `rpdata` does not publish" (§8.5) | how values are stored, shortlisted and offered |
-| Known values (long lists only) | Values that passed `Parameter.validate`: `EQUITIES`, `EQ_EMEA`, … Kept in a value index, not in the Markdown notes (§8.5) | `extract_params` (shortlist), `validate_params` (normalisation), `human_review` (options) |
+| Value domain | "`node` is a closed list that `rpdata` does not publish" (§8.4) | how values are stored, shortlisted and offered |
+| Known values (long lists only) | Values that passed `Parameter.validate`: `EQUITIES`, `EQ_EMEA`, … Kept in a value index, not in the Markdown notes (§8.4) | `extract_params` (shortlist), `validate_params` (normalisation), `human_review` (options) |
 | User vocabulary / aliases | "'equity desk' → `node=EQUITIES`"; "'breaches' → `min_utilisation=100`" | `extract_params` |
 | View-selection hints | "Requests about 'utilisation', 'usage' or 'breach' → `ViewUtilisations`" | `select_view` |
 | Rules across parameters | "`node=MASTER` with no filter other than dates times out; an integer `max_depth` or any other filter avoids it" | `extract_params`, `validate_params` step 5 |
@@ -323,7 +330,7 @@ knowledge/                      # created at runtime; git-ignored
 │   ├── node.md
 │   ├── current_date.md
 │   └── ...
-└── values/                     # value indexes, only for parameters with long lists (§8.5)
+└── values/                     # value indexes, only for parameters with long lists (§8.4)
     └── node.jsonl
 ```
 
@@ -334,7 +341,7 @@ knowledge/                      # created at runtime; git-ignored
 ```markdown
 ---
 param: node
-value_domain: closed_unpublished   # see §8.5; known values live in values/node.jsonl, not here
+value_domain: closed_unpublished   # see §8.4; known values live in values/node.jsonl, not here
 rules:
   - id: node-000
     kind: value_domain
@@ -357,15 +364,15 @@ rules:
 - `EQUITY` is not a node. Ask whether the user means `EQUITIES` or one of the `EQ_*` nodes.
 ```
 
-**Loading.** Only `general.md`, the notes for the candidate views and the notes for the chosen view's parameters are put into a prompt. Value indexes are never loaded into a prompt in full; only a shortlist is (§8.5).
+**Loading.** Only `general.md`, the notes for the candidate views and the notes for the chosen view's parameters are put into a prompt. Value indexes are never loaded into a prompt in full; only a shortlist is (§8.4).
 
-**No value lists in Markdown.** The Markdown notes hold rules and short text only. Lists of values are either read live from `rpdata` (short published lists) or kept in a value index (long lists), as set out in §8.5. This keeps every note file small, however many values a parameter has.
+**No value lists in Markdown.** The Markdown notes hold rules and short text only. Lists of values are either read live from `rpdata` (short published lists) or kept in a value index (long lists), as set out in §8.4. This keeps every note file small, however many values a parameter has.
 
-**Size limits.** At most 25 rules per file and about 2 KB of body text. At most 10 worked examples per view, most recent first. When a file goes over the limit, `learn` merges it: duplicates are combined and the least-used `tentative` rules are dropped.
+**Size limits.** At most 25 rules per file and about 2 KB of body text. At most 10 worked examples per view, most recent first. When a file goes over the limit, the learning worker merges it: duplicates are combined and the least-used `tentative` rules are dropped.
 
 **Content rule.** Notes describe *how to query*. They never contain rows or values from a DataFrame (such as positions or utilisations), except for reference values such as node names. They never contain a `user_id`.
 
-**Concurrency.** Writes are atomic (write a temporary file, then rename) and serialised by a process-level lock.
+**Concurrency.** Only the learning worker writes knowledge files (§8.6), so writes are serialised by design. Writes are atomic (write a temporary file, then rename), so a request reading notes at the same moment sees either the old file or the new one, never a half-written one.
 
 ### 8.3 When learning happens
 
@@ -380,9 +387,9 @@ rules:
 | Empty result with an identifiable cause | Coverage or quirk rule | `likely` |
 | A call fails, or a reviewer overrides a value, although the proposal followed a note | The note is demoted one level, or removed if it was `tentative` | n/a |
 
-`learn` uses the LLM to phrase the note and pick the file. A deterministic check then enforces the schema, the size limits, the content rule and dedup (same `kind` and same meaning on the same parameter or view). Every change is logged.
+The learning worker (§8.6) uses the LLM to phrase the note and pick the file. A deterministic check then enforces the schema, the size limits, the content rule and dedup (same `kind` and same meaning on the same parameter or view). Every change is logged.
 
-### 8.5 Parameter value domains (short and long value lists)
+### 8.4 Parameter value domains (short and long value lists)
 
 Some parameters have a handful of acceptable values (`limit_level`: 3). Others may have hundreds or thousands (`node` in a real hierarchy). Each parameter is given a **value domain**. The domain decides where its values come from, whether they are stored, and how many are shown to the LLM or a reviewer.
 
@@ -418,12 +425,38 @@ Up to `prompt_shortlist_size` candidates (default 15) go to the LLM, which is to
 
 **Aliases** follow the same pattern. They are capped per parameter (`max_aliases`, default 500, least recently used dropped first), and only aliases whose phrase appears in the request are loaded into a prompt.
 
-### 8.6 How learning reduces human review (and why it never reaches zero)
+### 8.5 How learning reduces human review (and why it never reaches zero)
 
 - Aliases and view hints turn items that needed review into `source: note, confidence: high` values. These are certain under §5.3 and §5.4, so the call goes ahead with no review.
 - Normalisation and format rules let the LLM propose valid values first time, instead of `validate_params` catching them.
 - Coverage and cross-parameter rules stop calls that would return empty or time out.
 - Review still happens when the request really is ambiguous, when a mandatory value has no source, when a fix would change the result (for example the MASTER filter), or when a note contradicts what the user just said. **What the user says explicitly always beats a note.**
+
+
+### 8.6 Learning runs in the background
+
+Learning must add **no latency** to the user's reply.
+
+**Emitting events (on the request path).**
+- A node that has something to learn from calls `learning.emit(event)`. This places a small, immutable `LearningEvent` on an in-process queue with `put_nowait` and returns at once. It never waits, never calls the LLM and never touches the disk.
+- A `LearningEvent` holds what the worker needs and nothing more: the kind of trigger (§8.3), the view, the params, the error class and message, the reviewer's edits, the `note_ids` used, the original request text and a timestamp. It never holds the DataFrame or the `user_id`.
+- Events are emitted at the moment they happen, including just before a `human_review` interrupt, so nothing is lost if the user never answers the review.
+
+**Processing events (off the request path).**
+- One `LearningWorker` runs on a background daemon thread for each agent instance, started with the agent. It takes events from the queue in order and does all the learning work in §8.3: LLM phrasing, dedup, merging, size limits, promoting and demoting notes, value-domain changes and value-index updates (§8.4).
+- A thread is used, rather than an asyncio task, so the worker behaves the same whether the agent is called from sync or async code.
+- The worker can use a different, cheaper model from the main agent (`RP_AGENT_LEARN_MODEL`, which defaults to `RP_AGENT_MODEL`).
+
+**Isolation.**
+- An exception in the worker is logged and the event is dropped. It never reaches the user and never stops the worker.
+- The queue is bounded (`learning_queue_size`, default 1,000). If it is full, `emit` drops the event and logs a warning rather than block the request.
+- Learning has no effect on the current request's result. The request has already used the notes it loaded in `load_context`.
+
+**Eventual consistency.** A request reads notes when it starts. Notes from a request that finished a moment earlier may still be in the queue, so a request that follows very closely may not benefit from them yet. This is accepted: it costs at most one extra review or one avoidable error, never a wrong result, because `Parameter.validate` and human review still apply.
+
+**Lifecycle.**
+- `agent.flush(timeout=None)` blocks until the queue is empty. It is for tests, scripts and shutdown, and is never called on the request path.
+- `agent.close()` stops taking new events, drains the queue (up to `learning_shutdown_timeout`, default 10 s) and stops the worker. It is also registered with `atexit`. Events still queued after the timeout are logged and dropped.
 
 ---
 
@@ -444,7 +477,12 @@ reply.review                                        # set if the agent is waitin
 
 agent.chat("node EQUITIES", config=config)          # the review answer resumes the interrupted graph
 df = agent.store.get_df("U004512", "ds_7f3a2c91")
+
+agent.flush()                                       # optional: wait for background learning (tests, scripts)
+agent.close()                                       # drain learning and stop the worker
 ```
+
+`chat` returns as soon as the reply is ready. It never waits for learning (§8.6).
 
 - `user_id` is **required** in the chat config. A request without it is rejected before any work is done.
 - `thread_id` identifies the conversation. LangGraph's in-memory checkpointer (`MemorySaver`) keeps per-thread state, so a review answer resumes the graph where it stopped.
@@ -499,7 +537,8 @@ rp_agent/
 │   ├── canonical.py            # CanonicalRequest, cache key, equivalences
 │   ├── validation.py           # ParamValidator (§5.5): Parameter.validate + cross-parameter rules
 │   ├── knowledge.py            # KnowledgeBase: load / query / write / merge notes
-│   ├── values.py               # value domains, value index, shortlist (§8.5)
+│   ├── learning.py             # LearningEvent, emit(), LearningWorker thread and queue (§8.6)
+│   ├── values.py               # value domains, value index, shortlist (§8.4)
 │   ├── schemas.py              # Pydantic models for structured LLM output and review payloads
 │   ├── prompts.py
 │   ├── state.py                # LangGraph state TypedDict
@@ -530,7 +569,7 @@ Tests use a scripted fake chat model (so they run with no network access or API 
 - `node="equities"` is normalised to `EQUITIES` before the call (no review, no error), and the change is shown in the reply.
 - `node="EQUITY"` causes a review before any call.
 
-**Value domains (§8.5)**
+**Value domains (§8.4)**
 - `limit_level` and `risk_factor` are `small_closed`: the full lists go into the prompt and the review, and nothing is written to `knowledge/values/`.
 - After the first `UnknownNodeError` (or a failed `Parameter.validate` for a well-formed node), `node` becomes `closed_unpublished`, and later valid nodes are added to `values/node.jsonl`.
 - With 1,000 synthetic values in the node index, the prompt holds at most 15 node candidates, the review offers at most 10, and `node.md` stays within its size limit.
@@ -555,6 +594,16 @@ Tests use a scripted fake chat model (so they run with no network access or API 
 - A note that leads to a failed call, or that a reviewer overrides, is demoted.
 - Notes stay within the size limits after 50 synthetic learning events, and never contain a `user_id` or DataFrame values.
 
+**Learning in the background (§8.6)**
+- With the learning LLM made to block (a fake model that waits on a `threading.Event`), `chat` still returns its reply. The time to reply is the same, within noise, as with learning switched off.
+- An exception raised in the learning worker does not change the reply and does not stop later events being processed.
+- With the queue full, `emit` returns at once and the event is dropped with a warning; the request still completes.
+- After `flush()`, the notes from the request are on disk. A new request then uses them.
+- `close()` drains queued events, and no event is processed after it returns.
+- No `LearningEvent` contains a DataFrame or a `user_id`.
+
+Learning tests elsewhere in this section call `agent.flush()` before checking the knowledge files.
+
 **Learning curve (evaluation script, not a unit test)**
 - `scripts/eval_learning.py` runs a fixed set of ~20 realistic single requests (with scripted review answers) twice: first with an empty knowledge directory, then with the notes from the first run. It reports, for each run: human reviews per request, `get_data` calls per request, failed calls and cache hits. The second run must show fewer reviews and fewer failed calls. This needs a real LLM and is run by hand.
 
@@ -567,7 +616,7 @@ These would make the agent more efficient. The agent is designed to work without
 | # | Proposal | Why |
 |---|---|---|
 | R1 | `rpdata.validate_params(view, **params) -> dict`: runs all of `get_data`'s validation steps 1–7 (including the rules across parameters and the MASTER rule) without querying, and returns the normalised params or raises the same errors | `Parameter.validate` only checks one parameter at a time. R1 would let the agent catch every validation error before the call, without learning the cross-parameter rules first |
-| R2 | Publish the node list: `allowed_values` on the `node` parameter, or `rpdata.list_allowed_values("node")` | `Parameter.validate` already rejects unknown nodes, but without the list the agent cannot offer the valid options in a review or normalise safely, until it has learned them. With R2, `node` becomes `large_closed` (§8.5) and uses the same shortlist, so the full list never enters a prompt |
+| R2 | Publish the node list: `allowed_values` on the `node` parameter, or `rpdata.list_allowed_values("node")` | `Parameter.validate` already rejects unknown nodes, but without the list the agent cannot offer the valid options in a review or normalise safely, until it has learned them. With R2, `node` becomes `large_closed` (§8.4) and uses the same shortlist, so the full list never enters a prompt |
 | R3 | Add `default` to `Parameter` (e.g. `max_depth` → `'max'`) | Lets the cache treat "omitted" and "default" as the same request without a learned note |
 | R4 | Expose the data coverage (first/last business date) | Stops out-of-period date queries without needing to learn the period |
 
@@ -578,7 +627,7 @@ These would make the agent more efficient. The agent is designed to work without
 2. `catalogue`, `canonical`, `store` (per user), `gateway`, with unit tests (no LLM).
 3. `validation` (`Parameter.validate` plus normalisation) and `knowledge` (runtime create, read, write, merge, limits), with unit tests.
 4. Graph nodes and `graph.py` with `human_review` interrupt, tested end-to-end with the fake chat model.
-5. Learning triggers (§8.3) and the scenarios in §11.
+5. Background learning worker (§8.6), learning triggers (§8.3) and the scenarios in §11.
 6. CLI, README and the learning evaluation script.
 
 ---
@@ -591,4 +640,5 @@ These would make the agent more efficient. The agent is designed to work without
 5. **Learned notes:** created by the agent while it runs, in a git-ignored directory. Not committed, and no seed notes (§8.2).
 6. **Human in the loop:** a human reviews the proposed call only when something is uncertain. When the agent is sure, it calls `get_data` with no confirmation (§5.6).
 7. **Retry after a failed call:** the agent never retries on its own. After a failed call it may make **one** more call, and only once a human approves a corrected proposal. No request makes more than 2 `get_data` calls (§6.2, §6.3).
-8. **Value lists:** short published lists (for example `limit_level`) are always read live from `rpdata` and shown in full. Long lists (for example `node`) are kept in a capped value index outside the notes, and only a shortlist of likely matches is shown to the LLM or a reviewer (§8.5).
+8. **Value lists:** short published lists (for example `limit_level`) are always read live from `rpdata` and shown in full. Long lists (for example `node`) are kept in a capped value index outside the notes, and only a shortlist of likely matches is shown to the LLM or a reviewer (§8.4).
+9. **Learning in parallel:** learning runs on a background worker fed by a non-blocking queue. The user's reply never waits for learning (§8.6).
