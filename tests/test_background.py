@@ -7,7 +7,7 @@ import time
 import pandas as pd
 import pytest
 
-from rp_agent.learning import LearningEvent
+from rp_agent.memory.learning import LearningEvent
 
 from .conftest import cfg
 from .fakes import BlockingLLM, FakeLLM, params, view

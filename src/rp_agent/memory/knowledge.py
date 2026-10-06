@@ -8,7 +8,7 @@ Notes are Markdown files with a YAML front matter block:
 
 The front matter holds machine-usable facts (rules, aliases, worked examples,
 value domain); the body is free text for people and the LLM. Lists of values
-are never kept here: see `values.py` (SPEC.md §8.4).
+are never kept here: see `rp_agent.memory.values` (SPEC.md §8.4).
 
 Only the learning worker writes (SPEC.md §8.6). Requests read from an
 in-memory copy guarded by a lock, and every file write is atomic.

@@ -20,11 +20,11 @@ from typing import Any
 
 import rpdata
 
+from ..memory.knowledge import KnowledgeBase
+from ..memory.learning import DOMAIN_CLOSED, NORMALISED, VALUES_VALIDATED, LearningEvent
+from ..memory.values import CLOSED_UNPUBLISHED, LARGE_CLOSED, SMALL_CLOSED, ValueDomains
 from .canonical import CanonicalRequest
 from .catalogue import Catalogue
-from .knowledge import KnowledgeBase
-from .learning import DOMAIN_CLOSED, NORMALISED, VALUES_VALIDATED, LearningEvent
-from .values import CLOSED_UNPUBLISHED, LARGE_CLOSED, SMALL_CLOSED, ValueDomains
 
 OK = "ok"
 UNCERTAIN = "uncertain"

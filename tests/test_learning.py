@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from rp_agent.learning import CALL_ERROR, LearningEvent
-from rp_agent.values import CLOSED_UNPUBLISHED
+from rp_agent.memory.learning import CALL_ERROR, LearningEvent
+from rp_agent.memory.values import CLOSED_UNPUBLISHED
 
 from .conftest import cfg
 from .fakes import FakeLLM, params, view

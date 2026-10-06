@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..canonical import CanonicalRequest
+from ...data.canonical import CanonicalRequest
 
 
 def run(ctx, state, config) -> dict:

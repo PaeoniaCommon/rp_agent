@@ -6,9 +6,9 @@ Scope and view choice share one structured call to keep latency down;
 
 from __future__ import annotations
 
-from .. import prompts
-from ..llm import structured
-from ..schemas import view_choice_model
+from ...llm import prompts
+from ...llm.client import structured
+from ...llm.schemas import view_choice_model
 
 
 def run(ctx, state, config) -> dict:

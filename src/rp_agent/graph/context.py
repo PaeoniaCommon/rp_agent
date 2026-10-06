@@ -7,14 +7,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from .catalogue import Catalogue
-from .config import Settings
-from .gateway import DataGateway
-from .knowledge import KnowledgeBase
-from .learning import Learning
-from .store import DataStore
-from .validation import ParamValidator
-from .values import ValueDomains
+from ..config import Settings
+from ..data.catalogue import Catalogue
+from ..data.gateway import DataGateway
+from ..data.store import DataStore
+from ..data.validation import ParamValidator
+from ..memory.knowledge import KnowledgeBase
+from ..memory.learning import Learning
+from ..memory.values import ValueDomains
 
 
 @dataclass

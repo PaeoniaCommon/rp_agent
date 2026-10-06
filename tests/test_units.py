@@ -7,12 +7,12 @@ from datetime import timedelta
 import pandas as pd
 import pytest
 
-from rp_agent.canonical import CanonicalRequest
-from rp_agent.catalogue import Catalogue
 from rp_agent.config import Settings
-from rp_agent.knowledge import KnowledgeBase
-from rp_agent.store import InMemoryDataStore
-from rp_agent.values import (
+from rp_agent.data.canonical import CanonicalRequest
+from rp_agent.data.catalogue import Catalogue
+from rp_agent.data.store import InMemoryDataStore
+from rp_agent.memory.knowledge import KnowledgeBase
+from rp_agent.memory.values import (
     CLOSED_UNPUBLISHED,
     OPEN,
     SMALL_CLOSED,

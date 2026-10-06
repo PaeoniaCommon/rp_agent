@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from ..canonical import CanonicalRequest
-from ..learning import CALL_ERROR, LearningEvent
+from ...data.canonical import CanonicalRequest
+from ...memory.learning import CALL_ERROR, LearningEvent
 from . import store_result
 
 

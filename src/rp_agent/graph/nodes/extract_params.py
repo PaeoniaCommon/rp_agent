@@ -6,10 +6,10 @@ parameter's values sized by its value domain (SPEC.md §8.4).
 
 from __future__ import annotations
 
-from .. import prompts
-from ..llm import structured
-from ..schemas import param_extraction_model
-from ..values import CLOSED_UNPUBLISHED, LARGE_CLOSED, SMALL_CLOSED
+from ...llm import prompts
+from ...llm.client import structured
+from ...llm.schemas import param_extraction_model
+from ...memory.values import CLOSED_UNPUBLISHED, LARGE_CLOSED, SMALL_CLOSED
 
 
 def _values_text(ctx, name: str, request: str) -> str:

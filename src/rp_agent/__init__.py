@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .agent import Reply, RPAgent
 from .config import Settings
-from .store import DatasetRecord, InMemoryDataStore
+from .data.store import DatasetRecord, InMemoryDataStore
 
 __version__ = "0.1.0"
 

@@ -6,9 +6,9 @@ Called by `fetch` in the same step, so the DataFrame never enters graph state
 
 from __future__ import annotations
 
-from ..canonical import CanonicalRequest
-from ..gateway import FetchResult
-from ..learning import CALL_OK, LearningEvent, iso_dates_of
+from ...data.canonical import CanonicalRequest
+from ...data.gateway import FetchResult
+from ...memory.learning import CALL_OK, LearningEvent, iso_dates_of
 
 
 def save(ctx, state, result: FetchResult) -> dict:

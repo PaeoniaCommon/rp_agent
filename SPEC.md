@@ -528,26 +528,44 @@ rp_agent/
 ├── pyproject.toml
 ├── README.md
 ├── SPEC.md
-├── .gitignore                  # includes knowledge/ and logs/
+├── .gitignore                    # includes knowledge/ and logs/
+├── scripts/
+│   └── eval_learning.py          # learning-curve evaluation (§11)
 ├── src/rp_agent/
-│   ├── __init__.py             # RPAgent, DatasetRecord
-│   ├── config.py               # settings (model, budget, TTL, paths) from env / defaults
-│   ├── catalogue.py            # wraps list_views / get_view / list_params, cached
-│   ├── gateway.py              # DataGateway: sole caller of rpdata.get_data, budget, call log
-│   ├── store.py                # DataStore protocol, InMemoryDataStore, DatasetRecord
-│   ├── canonical.py            # CanonicalRequest, cache key, equivalences
-│   ├── validation.py           # ParamValidator (§5.5): Parameter.validate + cross-parameter rules
-│   ├── knowledge.py            # KnowledgeBase: load / query / write / merge notes
-│   ├── learning.py             # LearningEvent, emit(), LearningWorker thread and queue (§8.6)
-│   ├── values.py               # value domains, value index, shortlist (§8.4)
-│   ├── schemas.py              # Pydantic models for structured LLM output and review payloads
-│   ├── prompts.py
-│   ├── state.py                # LangGraph state TypedDict
-│   ├── nodes/                  # one module per graph node (§5.2)
-│   ├── graph.py                # builds and compiles the StateGraph
-│   └── cli.py
+│   ├── __init__.py               # public API: RPAgent, Reply, Settings, DatasetRecord
+│   ├── agent.py                  # RPAgent: wires everything together; chat / flush / close (§9.1)
+│   ├── config.py                 # Settings (model, budget, reuse window, paths, limits) from env
+│   ├── cli.py                    # `rp-agent chat` (§9.2)
+│   │
+│   ├── graph/                    # the LangGraph state graph (§5)
+│   │   ├── builder.py            # builds and compiles the StateGraph, with edges and routes
+│   │   ├── state.py              # AgentState TypedDict and initial_state
+│   │   ├── context.py            # AgentContext: what every node shares
+│   │   └── nodes/                # one module per graph node (§5.2): load_context,
+│   │                             #   check_scope, select_view, extract_params,
+│   │                             #   validate_params, human_review, check_cache,
+│   │                             #   check_budget, fetch, store_result, diagnose, respond
+│   │
+│   ├── memory/                   # what the agent learns and remembers (§8)
+│   │   ├── knowledge.py          # KnowledgeBase: notes on views and parameters (§8.2)
+│   │   ├── values.py             # value domains, value index, shortlists (§8.4)
+│   │   └── learning.py           # LearningEvent, emit(), background LearningWorker (§8.6)
+│   │
+│   ├── data/                     # talking to rpdata and holding results (§4, §6, §7)
+│   │   ├── catalogue.py          # views and parameter metadata, Parameter.validate
+│   │   ├── validation.py         # ParamValidator: pre-flight checks, no get_data (§5.5)
+│   │   ├── gateway.py            # DataGateway: the only caller of rpdata.get_data (§6.1)
+│   │   ├── store.py              # DataStore protocol, per-user InMemoryDataStore (§7)
+│   │   └── canonical.py          # CanonicalRequest and cache keys (§7.3)
+│   │
+│   └── llm/                      # the language model
+│       ├── client.py             # ChatAnthropic construction, structured-output calls
+│       ├── prompts.py            # system prompts and prompt context blocks
+│       └── schemas.py            # Pydantic schemas for structured output
 └── tests/
 ```
+
+Dependencies only point one way: `llm` uses nothing else in the package, `memory` uses `llm`, `data` uses `memory`, and `graph` uses all three. `agent.py` builds them in that order.
 
 At runtime the agent also creates `knowledge/` (§8.2) and `logs/` (§6.1). Neither is committed.
 
@@ -627,7 +645,7 @@ These would make the agent more efficient. The agent is designed to work without
 1. Project skeleton, `pyproject.toml` with `rpdata` dependency, config, `.gitignore`, tooling (ruff, pytest).
 2. `catalogue`, `canonical`, `store` (per user), `gateway`, with unit tests (no LLM).
 3. `validation` (`Parameter.validate` plus normalisation) and `knowledge` (runtime create, read, write, merge, limits), with unit tests.
-4. Graph nodes and `graph.py` with `human_review` interrupt, tested end-to-end with the fake chat model.
+4. Graph nodes and `graph/builder.py` with `human_review` interrupt, tested end-to-end with the fake chat model.
 5. Background learning worker (§8.6), learning triggers (§8.3) and the scenarios in §11.
 6. CLI, README and the learning evaluation script.
 

@@ -11,18 +11,18 @@ from typing import Any
 import pandas as pd
 from langgraph.types import Command
 
-from .catalogue import Catalogue
 from .config import Settings
-from .context import AgentContext
-from .gateway import DataGateway
+from .data.catalogue import Catalogue
+from .data.gateway import DataGateway
+from .data.store import DataStore, InMemoryDataStore, utc_now
+from .data.validation import ParamValidator
 from .graph import build_graph
-from .knowledge import KnowledgeBase
-from .learning import Learning, LearningWorker
+from .graph.context import AgentContext
+from .graph.state import initial_state
 from .llm import make_chat_model
-from .state import initial_state
-from .store import DataStore, InMemoryDataStore, utc_now
-from .validation import ParamValidator
-from .values import ValueDomains
+from .memory.knowledge import KnowledgeBase
+from .memory.learning import Learning, LearningWorker
+from .memory.values import ValueDomains
 
 log = logging.getLogger(__name__)
 

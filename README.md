@@ -58,6 +58,19 @@ rp-agent chat --user-id U004512
   worker thread writes notes to `knowledge/` (git-ignored). The reply never waits
   for learning.
 
+## Project layout
+
+```
+src/rp_agent/
+├── agent.py      RPAgent: the entry point (chat / flush / close)
+├── config.py     Settings from env vars
+├── cli.py        rp-agent chat
+├── graph/        the LangGraph state graph: builder, state, context, nodes/
+├── memory/       learned notes, value domains and the background learning worker
+├── data/         rpdata catalogue, pre-flight validation, get_data gateway, dataset store
+└── llm/          model client, prompts and structured-output schemas
+```
+
 ## Configuration
 
 | Env var | Default | Meaning |

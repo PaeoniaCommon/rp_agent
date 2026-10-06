@@ -11,10 +11,10 @@ from typing import Any
 
 from langgraph.types import interrupt
 
-from .. import prompts
-from ..learning import REVIEW, LearningEvent
-from ..llm import structured
-from ..schemas import ReviewDecision
+from ...llm import prompts
+from ...llm.client import structured
+from ...llm.schemas import ReviewDecision
+from ...memory.learning import REVIEW, LearningEvent
 
 _APPROVE = {"ok", "okay", "yes", "y", "approve", "approved", "go", "go ahead", "looks good",
             "correct", "fine", "proceed", "confirm"}

@@ -21,10 +21,10 @@ from datetime import date, datetime, timedelta
 from types import MappingProxyType
 from typing import Any
 
-from . import prompts
+from ..llm import prompts
+from ..llm.client import structured
+from ..llm.schemas import NoteDraft, PhraseDraft
 from .knowledge import KnowledgeBase
-from .llm import structured
-from .schemas import NoteDraft, PhraseDraft
 from .values import CLOSED_UNPUBLISHED, ValueDomains, squash
 
 log = logging.getLogger(__name__)
