@@ -1,6 +1,6 @@
 # rp_agent: Specification
 
-**Status:** v0.3, ready for implementation. Review decisions are recorded in §14. Nothing is implemented yet.
+**Status:** v0.4, ready for implementation. Review decisions are recorded in §14. Nothing is implemented yet.
 **Purpose:** A LangGraph agent that handles **one specific data request**. It turns the user's plain-language request into **one** correct, economical `rpdata.get_data` call on **one** view. It keeps the resulting DataFrame in a per-user store and hands back an ID. It learns from each call and each human review, so over time it needs fewer human checks and makes fewer bad calls.
 
 ---
@@ -143,7 +143,7 @@ class ViewChoice(BaseModel):
 
 ### 5.4 Parameter extraction
 
-The LLM gets the request, the view's parameter metadata (dtype, description, format, allowed values), the notes for the view and each of its parameters, and the current date. It returns one entry per parameter it wants to set:
+The LLM gets the request, the view's parameter metadata (dtype, description, format), the acceptable values for each parameter in a form that depends on how many there are (§8.5: the full list for short lists, a shortlist of likely candidates for long ones), the notes for the view and each of its parameters, and the current date. It returns one entry per parameter it wants to set:
 
 ```python
 class ParamValue(BaseModel):
@@ -180,7 +180,7 @@ Optional parameters are set only when the request implies them. The agent does n
 | 5 | Rules across parameters: `previous_date ≤ current_date`, `min_utilisation ≤ max_utilisation`, the MASTER timeout rule, and any other rules learned from notes | Knowledge notes (§8), replaced by `rpdata.validate_params` when it exists (R1) | Mark uncertain, with a proposed fix |
 
 **When `Parameter.validate` rejects a value**, the agent tries a normalisation:
-- It is **certain** if there is exactly one candidate that differs only by case or whitespace and is in `allowed_values` or a learned value list (for example `tier1` → `Tier1`, `equities` → `EQUITIES`), or if a `certain` note gives the rule (for example, reformatting an ISO date string). The candidate must then pass `Parameter.validate`. The change is applied, and reported in the reply.
+- It is **certain** if there is exactly one candidate that differs only by case or whitespace and is in the parameter's known values: the full `allowed_values` list, or the learned value index for parameters with long lists (§8.5) (for example `tier1` → `Tier1`, `equities` → `EQUITIES`), or if a `certain` note gives the rule (for example, reformatting an ISO date string). The candidate must then pass `Parameter.validate`. The change is applied, and reported in the reply.
 - Otherwise it is **uncertain** (for example, `EQUITY` could be `EQUITIES` or an `EQ_*` node; `01/07/2026` could be 1 July or 7 January). The failed value, the validator's error message and the candidate values go to human review.
 
 A normalisation that passes validation is recorded as a note (§8.3), so next time the LLM proposes the right value first.
@@ -198,13 +198,16 @@ I need you to check this before I query.
 
   View:    ViewUtilisations                      ✓
   Params:  node          = ?  (needed)           "equity desk" is not a known node.
-                                                  Options: EQUITIES, EQ_EMEA, EQ_US, EQ_APAC, …
+                                                  Closest matches: EQUITIES, EQ_EMEA, EQ_US, EQ_APAC
+                                                  (or type another node)
            current_date  = '2026-08-28'          ✓
            limit_level   = 'Tier1'               ✓
            min_utilisation = 100                 ⚠ inferred from "breaches"
 
 Reply "ok" to approve, give corrections (e.g. "node EQUITIES"), or "cancel".
 ```
+
+Options shown in a review depend on the parameter's value domain (§8.5). A short closed list (such as `limit_level`) is shown in full. A long list (such as `node`) is shown as a shortlist of at most 10 closest matches, plus free text. Whatever the reviewer types is still checked with `Parameter.validate`.
 
 - **Approve:** the proposal goes back through `validate_params`. Items the reviewer approved become certain for this request.
 - **Edit:** the reviewer's values replace the proposal's, and are validated again. What the human says always beats notes and the LLM's proposal.
@@ -299,7 +302,8 @@ v1 ships `InMemoryDataStore`: a dict keyed by `user_id`, held by the agent insta
 |---|---|---|
 | Format rule | "`current_date` must be a `yyyy-mm-dd` string; `2026/07/01` is rejected" | `extract_params`, `validate_params` |
 | Normalisation | "Node names are upper case; `equities` → `EQUITIES` is safe" | `extract_params`, `validate_params` |
-| Observed valid values | Values that passed validation or a call: `EQUITIES`, `EQ_EMEA`, … | `validate_params` (candidates for normalisation) |
+| Value domain | "`node` is a closed list that `rpdata` does not publish" (§8.5) | how values are stored, shortlisted and offered |
+| Known values (long lists only) | Values that passed `Parameter.validate`: `EQUITIES`, `EQ_EMEA`, … Kept in a value index, not in the Markdown notes (§8.5) | `extract_params` (shortlist), `validate_params` (normalisation), `human_review` (options) |
 | User vocabulary / aliases | "'equity desk' → `node=EQUITIES`"; "'breaches' → `min_utilisation=100`" | `extract_params` |
 | View-selection hints | "Requests about 'utilisation', 'usage' or 'breach' → `ViewUtilisations`" | `select_view` |
 | Rules across parameters | "`node=MASTER` with no filter other than dates times out; an integer `max_depth` or any other filter avoids it" | `extract_params`, `validate_params` step 5 |
@@ -315,10 +319,12 @@ knowledge/                      # created at runtime; git-ignored
 ├── views/
 │   ├── ViewLimits.md
 │   └── ...
-└── params/
-    ├── node.md
-    ├── current_date.md
-    └── ...
+├── params/
+│   ├── node.md
+│   ├── current_date.md
+│   └── ...
+└── values/                     # value indexes, only for parameters with long lists (§8.5)
+    └── node.jsonl
 ```
 
 - **Created at runtime.** The directory is set in config (`RP_AGENT_KNOWLEDGE_DIR`, default `./knowledge`). It is created empty on first run and filled by the agent as it works. It is **not** committed to the repo; `knowledge/` is in `.gitignore`. There are no seed notes.
@@ -328,10 +334,16 @@ knowledge/                      # created at runtime; git-ignored
 ```markdown
 ---
 param: node
-aliases:                     # user phrase -> value
-  "equity desk": EQUITIES
-observed_values: [EQUITIES, EQ_EMEA, CREDIT]
+value_domain: closed_unpublished   # see §8.5; known values live in values/node.jsonl, not here
 rules:
+  - id: node-000
+    kind: value_domain
+    text: "Closed list, not published. Unknown but well-formed values raise UnknownNodeError."
+    certainty: certain
+    source: rpdata_error
+    created: 2026-09-27
+    last_confirmed: 2026-09-27
+    uses: 5
   - id: node-001
     kind: normalisation
     text: "Upper case and case-sensitive. 'equities' fails validation; 'EQUITIES' passes."
@@ -345,7 +357,9 @@ rules:
 - `EQUITY` is not a node. Ask whether the user means `EQUITIES` or one of the `EQ_*` nodes.
 ```
 
-**Loading.** Only `general.md`, the notes for the candidate views and the notes for the chosen view's parameters are put into a prompt. Nothing else is loaded.
+**Loading.** Only `general.md`, the notes for the candidate views and the notes for the chosen view's parameters are put into a prompt. Value indexes are never loaded into a prompt in full; only a shortlist is (§8.5).
+
+**No value lists in Markdown.** The Markdown notes hold rules and short text only. Lists of values are either read live from `rpdata` (short published lists) or kept in a value index (long lists), as set out in §8.5. This keeps every note file small, however many values a parameter has.
 
 **Size limits.** At most 25 rules per file and about 2 KB of body text. At most 10 worked examples per view, most recent first. When a file goes over the limit, `learn` merges it: duplicates are combined and the least-used `tentative` rules are dropped.
 
@@ -368,7 +382,43 @@ rules:
 
 `learn` uses the LLM to phrase the note and pick the file. A deterministic check then enforces the schema, the size limits, the content rule and dedup (same `kind` and same meaning on the same parameter or view). Every change is logged.
 
-### 8.4 How learning reduces human review (and why it never reaches zero)
+### 8.5 Parameter value domains (short and long value lists)
+
+Some parameters have a handful of acceptable values (`limit_level`: 3). Others may have hundreds or thousands (`node` in a real hierarchy). Each parameter is given a **value domain**. The domain decides where its values come from, whether they are stored, and how many are shown to the LLM or a reviewer.
+
+| Domain | How it is identified | Example in `rpdata` today | Where values come from | Stored by the agent? | In the LLM prompt | In a human review |
+|---|---|---|---|---|---|---|
+| `small_closed` | `allowed_values` is published and has at most `small_list_max` values (default 30) | `limit_level` (3), `risk_factor` (10) | `rpdata.list_params()`, read live at start-up | **No.** Never copied into notes, so they cannot go out of date | The full list, always | The full list, as options |
+| `large_closed` | `allowed_values` is published and has more than `small_list_max` values | none today (`node`, if R2 is adopted) | `rpdata.list_params()`, read live at start-up | No | A shortlist only | A shortlist, plus free text |
+| `closed_unpublished` | No `allowed_values`, but `rpdata` rejects well-formed unknown values (learned, see below) | `node` | The learned value index | Yes, in `values/<param>.jsonl` | A shortlist only | A shortlist, plus free text |
+| `open` | No `allowed_values`, and well-formed unknown values are accepted (they return an empty DataFrame) | `limit_id`, `limit_group`, `user_id`, dates, utilisation bounds | Format rule only | **No** values stored (aliases only) | The format rule | Free text, with the format rule |
+
+**Working out the domain.**
+- Published lists are classified at start-up from `allowed_values` and its length.
+- A parameter with no `allowed_values` starts as `open`. It becomes `closed_unpublished` when `Parameter.validate` or `get_data` rejects a value that matches the parameter's format because the value is unknown (for example `UnknownNodeError`). This is recorded as a `certain` rule of kind `value_domain` in the parameter's note.
+- Config setting `param_domains` can set the domain of any parameter directly and overrides both.
+
+**Value index (long lists only).** `knowledge/values/<param>.jsonl` holds one line per known value, for example `{"value": "EQ_EMEA", "first_seen": "2026-09-27", "last_seen": "2026-10-06", "uses": 4}`.
+- **Added:** when a value passes `Parameter.validate`. That check is free, so the index grows without any `get_data` calls. A value supplied by a reviewer is added only after it passes.
+- **Removed:** when `Parameter.validate` later rejects it (the reference data has changed).
+- **Capped:** at `max_indexed_values` per parameter (default 10,000). When full, the least recently used values are dropped.
+- **Advisory only.** The index is a shortcut, never the source of truth. A value not in the index is still checked with `Parameter.validate`, so a missing or dropped value can at worst cause a review, never a wrong call.
+- Held in memory as a lookup index (exact, upper-cased and token keys) and never loaded whole into a prompt.
+
+**Shortlist.** For `large_closed` and `closed_unpublished` parameters, a deterministic function `shortlist(param, request_text, k)` picks candidates in this order, without duplicates:
+1. values whose alias phrase appears in the request;
+2. exact or case- and whitespace-insensitive matches of words in the request;
+3. prefix and token matches (for example, "equity" → `EQUITIES`, `EQ_EMEA`, …);
+4. close fuzzy matches (`difflib` ratio ≥ 0.8);
+5. if there is room left, the most used values.
+
+Up to `prompt_shortlist_size` candidates (default 15) go to the LLM, which is told the list is partial. The LLM may propose a value outside the shortlist, but the value must pass `Parameter.validate`, and if it has no source it is a `guess` and therefore uncertain (§5.4). A human review shows up to `review_options_size` candidates (default 10), plus "or type another value".
+
+**Normalisation** (§5.5) searches the full published list for `small_closed` and `large_closed`, and the value index for `closed_unpublished`. A match must be unique to count as certain. `open` parameters are never normalised against values, only by format rules.
+
+**Aliases** follow the same pattern. They are capped per parameter (`max_aliases`, default 500, least recently used dropped first), and only aliases whose phrase appears in the request are loaded into a prompt.
+
+### 8.6 How learning reduces human review (and why it never reaches zero)
 
 - Aliases and view hints turn items that needed review into `source: note, confidence: high` values. These are certain under §5.3 and §5.4, so the call goes ahead with no review.
 - Normalisation and format rules let the LLM propose valid values first time, instead of `validate_params` catching them.
@@ -449,6 +499,7 @@ rp_agent/
 │   ├── canonical.py            # CanonicalRequest, cache key, equivalences
 │   ├── validation.py           # ParamValidator (§5.5): Parameter.validate + cross-parameter rules
 │   ├── knowledge.py            # KnowledgeBase: load / query / write / merge notes
+│   ├── values.py               # value domains, value index, shortlist (§8.5)
 │   ├── schemas.py              # Pydantic models for structured LLM output and review payloads
 │   ├── prompts.py
 │   ├── state.py                # LangGraph state TypedDict
@@ -478,6 +529,13 @@ Tests use a scripted fake chat model (so they run with no network access or API 
 - `limit_level="Tier 3"` fails `Parameter.validate` with no unique normalisation. It causes a review listing `Tier0`, `Tier1`, `Warning`, and no call.
 - `node="equities"` is normalised to `EQUITIES` before the call (no review, no error), and the change is shown in the reply.
 - `node="EQUITY"` causes a review before any call.
+
+**Value domains (§8.5)**
+- `limit_level` and `risk_factor` are `small_closed`: the full lists go into the prompt and the review, and nothing is written to `knowledge/values/`.
+- After the first `UnknownNodeError` (or a failed `Parameter.validate` for a well-formed node), `node` becomes `closed_unpublished`, and later valid nodes are added to `values/node.jsonl`.
+- With 1,000 synthetic values in the node index, the prompt holds at most 15 node candidates, the review offers at most 10, and `node.md` stays within its size limit.
+- A value that passes `Parameter.validate` but is not in the index is accepted. A value dropped from the index (cap reached) causes at most a review, never a wrong call.
+- `limit_id`, `limit_group` and `user_id` stay `open`, and no values are stored for them.
 - Rejecting a review makes no call. Editing a review applies the human's values and validates them again.
 
 **Store and reuse**
@@ -509,7 +567,7 @@ These would make the agent more efficient. The agent is designed to work without
 | # | Proposal | Why |
 |---|---|---|
 | R1 | `rpdata.validate_params(view, **params) -> dict`: runs all of `get_data`'s validation steps 1–7 (including the rules across parameters and the MASTER rule) without querying, and returns the normalised params or raises the same errors | `Parameter.validate` only checks one parameter at a time. R1 would let the agent catch every validation error before the call, without learning the cross-parameter rules first |
-| R2 | Publish the node list: `allowed_values` on the `node` parameter, or `rpdata.list_allowed_values("node")` | `Parameter.validate` already rejects unknown nodes, but without the list the agent cannot offer the valid options in a review or normalise safely, until it has learned them |
+| R2 | Publish the node list: `allowed_values` on the `node` parameter, or `rpdata.list_allowed_values("node")` | `Parameter.validate` already rejects unknown nodes, but without the list the agent cannot offer the valid options in a review or normalise safely, until it has learned them. With R2, `node` becomes `large_closed` (§8.5) and uses the same shortlist, so the full list never enters a prompt |
 | R3 | Add `default` to `Parameter` (e.g. `max_depth` → `'max'`) | Lets the cache treat "omitted" and "default" as the same request without a learned note |
 | R4 | Expose the data coverage (first/last business date) | Stops out-of-period date queries without needing to learn the period |
 
@@ -533,3 +591,4 @@ These would make the agent more efficient. The agent is designed to work without
 5. **Learned notes:** created by the agent while it runs, in a git-ignored directory. Not committed, and no seed notes (§8.2).
 6. **Human in the loop:** a human reviews the proposed call only when something is uncertain. When the agent is sure, it calls `get_data` with no confirmation (§5.6).
 7. **Retry after a failed call:** the agent never retries on its own. After a failed call it may make **one** more call, and only once a human approves a corrected proposal. No request makes more than 2 `get_data` calls (§6.2, §6.3).
+8. **Value lists:** short published lists (for example `limit_level`) are always read live from `rpdata` and shown in full. Long lists (for example `node`) are kept in a capped value index outside the notes, and only a shortlist of likely matches is shown to the LLM or a reviewer (§8.5).
